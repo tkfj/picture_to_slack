@@ -5,9 +5,14 @@ services:
       dockerfile: Dockerfile
       args:
         USER_UID: 1000
-
     volumes:
       - type: bind
         source: ..
         target: /usr/src/app
         consistency: cached
+      - ../../ytss/export:/data
+
+    environment:
+      PYTHONPATH: '/usr/src/app/src'
+    env_file:
+      - .env

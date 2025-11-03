@@ -24,7 +24,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Pythonパッケージインストール
 RUN pip install --no-cache-dir \
     slack-sdk \
-    PyYAML \
     requests
 
 # 作業ディレクトリを設定

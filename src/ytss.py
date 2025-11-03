@@ -1,20 +1,14 @@
 import os
-import json
-import yaml
-
+import sys
+from pathlib import Path
 from typing import List, Tuple, Dict, Set, Any
 from pprint import pprint
-from collections import defaultdict
+import mimetypes
+import time
 
 import requests
-import datetime
-import dotenv
 import slack_sdk
-import decimal
-import math
 
-from PIL import Image
-from io import BytesIO
 def prepare_slack():
     global slack_cli
     global slack_bot_user_id
@@ -66,8 +60,7 @@ def send_slack_images(
         slack_up_files:List[str, str]=list()
         for i, file in enumerate(files):
             slack_get_up_params={
-                'filename': upload_fname,
-                'length': len(bytes_img_up),
+                'length': len(file),
             }
             if file_names is not None:
                 slack_get_up_params['filename'] = file_names[i]
@@ -121,12 +114,12 @@ def delete_slack_same_titles(event_type: str, post_ts: float=None, check_limit:i
         if post_ts is not None and past_ts >= post_ts: #tsが指定されていて、それと同じか新しい
             # print("skip: ts")
             continue
-        if event_type is not None and past_msg.get('metadata',{}).get('event_type') != event_type: #posttypeが異なる
+        if event_type is not None and past_msg.get('metadata',{}).get('event_type') != event_type: #event_typeが異なる
             # print(f"skip: event_type me: {event_type}   you: {past_msg.get('metadata',{}).get('event_type')}")
             continue
         #ここに到達したら削除対象
         #ユーザーが同一
-        #ぽstTypeが一致
+        #event_typeが一致
         #TSがあった場合、それより古い
 
         resp_d = slack_cli.chat_delete(
@@ -148,7 +141,6 @@ def send_slack(
         event_payload:any = None,
         remove_past:int = 0,
     )->None:
-    prepare_slack()
     blocks_fix:List[any] = None
     if blocks is not None and len(blocks)>0:
         blocks_fix=blocks.copy()
@@ -198,79 +190,62 @@ def send_slack(
         raise e
     return post_ts
 
-dotenv.load_dotenv()
 
-slack_token = os.environ['SLACK_TOKEN']
-slack_ch_nm = os.environ['SLACK_CH_NM']
-slack_cli = None
-slack_bot_user_id = None
-slack_ch_id = None
+if __name__ == '__main__':
+    # usage
+    # python -m pic2slack picture_file event_type pic_title
 
-out_path = os.environ['OUTPUT_PATH']
+    args = sys.argv
+    if len(args) != 4:
+        print("usage", file=sys.stderr)
+        print("pic2slack picture_file event_type title", file=sys.stderr)
+        sys.exit(1)
+    in_path = args[1]
+    slack_event_type = args[2]
+    img_title = args[3]
 
-slack_meta_event_type_lvcm = 'fjworks_livecamera'
+    slack_token = os.environ['SLACK_TOKEN']
+    slack_ch_nm = os.environ['SLACK_CH_NM']
 
-with open("./control.yml",'rb') as yamlfile: #非ASCIIを含むのでバイナリ
-    config=yaml.safe_load(yamlfile)
+    slack_cli = None
+    slack_bot_user_id = None
+    slack_ch_id = None
 
-prepare_slack()
-slack_past_msgs_ts=f'{datetime.datetime.now(datetime.timezone.utc).timestamp() - 24 * 60 * 60: .6f}'
-# print('past' , past_msgs_ts)
-past_msgs_resp=slack_cli.conversations_history(
-    channel=slack_ch_id,
-    include_all_metadata=True,
-    inclusive=True,
-    limit=999, #ページングしない最大は999らしい?
-    oldest=slack_past_msgs_ts,
-)
+    img_mimetype,_ = mimetypes.guess_file_type(in_path)
+    print(img_mimetype)
+    with open(in_path, 'rb') as readf:
+        img_bytes = readf.read()
+    img_name = Path(in_path).name
 
-ssimg:Image = Image.open(config['control']['capture_file'])
-slack_footer = (
-    'source: Youtubeチャンネル '
-    f'<{config["control"]["channel_url"]} |{config["control"]["channel_name"]}>'
-    f'{config["control"]["video_title"]}'
-)
+    prepare_slack()
 
-img_mimetype_out='image/jpg'
-upload_fname=f'livecam.jpg'
+    uploaded_files=send_slack_images(
+        [img_bytes],
+        [img_name],
+        [img_mimetype],
+        [img_title],
+        [img_title],
+    )
+    slack_blocks:List[Dict[str,any]] = list()
+    slack_blocks.extend([{
+        "type": "image",
+        "slack_file": {'id': fid},
+        "alt_text":img_title,
+    } for (fid, furl) in uploaded_files])
+    slack_header = None
+    slack_footer = None
+    slack_text = img_title
+    slack_meta={
+    }
+    for fid, furl in uploaded_files:
+        waittime=2.5
+        while True:
+            # print(fid,furl)
+            resp_fs=slack_cli.files_info(file=fid)
+            if 'original_w' in resp_fs['file'] and 'original_h' in resp_fs['file']: #非同期アップロードが完了した時に設定されると思われる属性ができるまで待つ
+                break
+            time.sleep(waittime)
+            # waittime=waittime*2
+    post_ts=send_slack(slack_text, slack_blocks, slack_header, slack_footer, slack_event_type, slack_meta, 10)
 
-buf_img_up=BytesIO()
-img_up=ssimg.save(buf_img_up, format='JPEG')
-buf_img_up.seek(0)
-bytes_img_up=buf_img_up.read()
 
-prepare_slack()
-
-uploaded_files=send_slack_images(
-    [bytes_img_up],
-    [upload_fname],
-    [img_mimetype_out],
-    ['ライブカメラ'],
-    ['ライブカメラ'],
-)
-slack_blocks:List[Dict[str,any]] = list()
-slack_blocks.extend([{
-    "type": "image",
-    "slack_file": {'id': fid},
-    "alt_text":'ライブカメラ',
-} for (fid, furl) in uploaded_files])
-slack_header=None
-slack_footerz={
-    "type": "mrkdwn",
-    "text": slack_footer,
-}
-slack_text="ライブカメラ"
-slack_meta={
-     'basetime':f'xxxx',
-}
-import time
-for fid, furl in uploaded_files:
-    waittime=2.5
-    while True:
-        # print(fid,furl)
-        resp_fs=slack_cli.files_info(file=fid)
-        if 'original_w' in resp_fs['file'] and 'original_h' in resp_fs['file']: #非同期アップロードが完了した時に設定されると思われる属性ができるまで待つ
-            break
-        time.sleep(waittime)
-        # waittime=waittime*2
-post_ts=send_slack(slack_text, slack_blocks, slack_header, slack_footerz, slack_meta_event_type_lvcm, slack_meta, 10)
